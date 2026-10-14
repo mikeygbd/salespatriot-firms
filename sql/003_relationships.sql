@@ -10,11 +10,10 @@ drop schema if exists link cascade;
 create schema link;
 
 -- Vendor duplicates
--- The vendor file has the same company under several vendor IDs, like
--- PARKER HANNIFIN CORP and PARKER HANNIFIN CORPORATION. Each group of
--- duplicates gets one parent record. The brief says to prioritize linked
--- firms, so the record with the most manufacturers under it wins, then the
--- one with the most complete contact info.
+-- The vendor file has the same company under several vendor IDs with small
+-- spelling differences. Each group gets one parent record. Linked firms are
+-- prioritized, so the record with the most manufacturers wins, then the one
+-- with the most complete contact info.
 create table link.vendors as
 with child_counts as (
   select vendor_key, count(*) as manufacturer_count
@@ -25,8 +24,8 @@ with child_counts as (
 keyed as (
   select
     v.*,
-    -- A name made only of words like THE or COMPANY has no key, so it falls
-    -- back to its own vendor ID and never gets merged with anything.
+    -- A name with nothing left after stripping falls back to its own vendor
+    -- ID so it never gets merged with anything.
     coalesce(clean.name_key(v.company_name), 'vendor ' || v.vendor_key) as name_key,
     coalesce(c.manufacturer_count, 0) as manufacturer_count,
     (v.email is not null)::int + (v.phone is not null)::int + (v.contact_name is not null)::int as contact_fields
@@ -64,10 +63,9 @@ group by parent_vendor_key, name_key;
 alter table link.parent_vendors add primary key (vendor_key);
 
 -- Manufacturers
--- Vendors 2 and 5 are blank records with thousands of manufacturers pointed
--- at them. They look like placeholder codes in the client's system rather
--- than real vendors, so those manufacturers are treated as orphans instead of
--- being grouped under a vendor with no name.
+-- A couple of blank vendor records have thousands of manufacturers pointed
+-- at them. They're placeholder codes rather than real vendors, so those
+-- manufacturers are treated as orphans.
 create table link.manufacturers as
 select
   m.*,

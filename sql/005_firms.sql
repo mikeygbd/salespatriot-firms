@@ -6,7 +6,7 @@
 -- every rule below keeps the linked copy and drops the orphan one:
 --
 --   1. Vendors that share a CAGE are one company under its legal name and its
---      trade name (FOTRONIC CORP and TEST EQUIPMENT DEPOT), so they merge.
+--      trade name, so they merge.
 --   2. A vendor listed as one of its own manufacturers is just itself, so it
 --      comes out of its own child list. A vendor whose only manufacturer was
 --      itself ends up as an orphan vendor, which is the self representing case.

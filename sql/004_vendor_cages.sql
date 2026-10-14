@@ -13,9 +13,9 @@ drop schema if exists match cascade;
 create schema match;
 
 -- Registry names
--- Registry names are often "LEGAL NAME DBA TRADE NAME", and a vendor could be
--- listed under either one. Each CAGE gets a row for its full name, plus one
--- for each side of a DBA when there is one.
+-- A registry name often holds a legal name and a DBA trade name, and a vendor
+-- could be listed under either. Each CAGE gets a row for its full name plus
+-- one for each side of the DBA.
 create table match.registry_names as
 select cage_code, status, clean.name_key(company_name) as name_key, 'full' as name_part
 from clean.cage_registry
@@ -34,10 +34,10 @@ create index on match.registry_names (cage_code);
 analyze match.registry_names;
 
 -- Method 1: the vendor's own manufacturer
--- Some vendors show up in Cage Maintenance as one of their own manufacturers,
--- like MACGREGOR USA linked to MACGREGOR USA INC. When a vendor's name matches
--- one of its own linked manufacturers, that CAGE is the strongest match there
--- is, since the client already tied the two together.
+-- Some vendors are listed in Cage Maintenance as one of their own
+-- manufacturers. When a vendor's name matches one of its own linked
+-- manufacturers, that's the strongest match there is, since the client
+-- already tied the two together.
 create table match.own_manufacturer as
 with hits as (
   select distinct p.vendor_key, m.cage_code, m.registry_status

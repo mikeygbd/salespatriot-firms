@@ -1,25 +1,19 @@
 -- Raw landing tables for the three CSVs.
 --
--- Every column is text because the source data is too messy to cast on the way
--- in (CAGE codes with leading spaces, vendor codes exported as floats like
--- 2538.0). Loading it as is means nothing fails or gets lost, and all of the
--- cleaning happens in later SQL steps where each rule is easy to see.
+-- Every column is text since the source data is too messy to cast on the way
+-- in. Loading it as is means nothing fails or gets lost, and the cleaning
+-- happens in later SQL steps where each rule is easy to see.
 --
--- source_row is the line number in the original file so any output record can
--- be traced back to its source. The tables are unlogged because they are just
--- copies of files on disk, which makes the big cages load faster.
---
--- The schema is dropped and recreated each run so the pipeline can always be
--- rerun from scratch.
+-- source_row is the line number in the original file, for tracing records
+-- back. Tables are unlogged since they can always be reloaded from the CSVs,
+-- and the schema is rebuilt on every run.
 
 drop schema if exists staging cascade;
 create schema staging;
 
--- The vendor export has 139 columns. I only keep identity, contact and
--- relationship fields. The contact fields include the sales rep and purchasing
--- columns as fallbacks since the main phone and email are often empty.
--- Bank accounts, routing numbers and tax IDs are left out on purpose so they
--- never reach the database.
+-- Only identity, contact and relationship fields are kept. The sales rep and
+-- purchasing columns are fallbacks for when the main phone or email is empty.
+-- Bank and tax fields are left out on purpose so they never reach the database.
 create unlogged table staging.vendors (
   source_row          integer primary key,
   vendor_id           text,
@@ -52,10 +46,8 @@ create unlogged table staging.vendors (
   last_updated        text
 );
 
--- Each row is a manufacturer CAGE code. When vendor_code is filled in, it
--- points to the vendor that represents that manufacturer. description is free
--- text that usually holds an email but sometimes a fax number or a note, so it
--- gets sorted out during cleaning.
+-- vendor_code links a manufacturer to the vendor that represents it.
+-- description is free text that gets sorted out during cleaning.
 create unlogged table staging.cage_maintenance (
   source_row   integer primary key,
   cage_code    text,
@@ -65,10 +57,8 @@ create unlogged table staging.cage_maintenance (
   export_date  text
 );
 
--- Internal CAGE registry, about 4 million rows. The source id column is the
--- CAGE code, so it is renamed here to make joins read clearly. Columns like
--- award_history, tracked_nsns and ai_description are skipped since they are
--- almost always empty and aren't needed to identify a firm.
+-- Internal CAGE registry. id is renamed to cage_code so joins read clearly.
+-- Only the columns needed to identify a firm are kept.
 create unlogged table staging.cages (
   source_row  integer primary key,
   cage_code   text,

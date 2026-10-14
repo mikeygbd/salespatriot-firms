@@ -11,20 +11,18 @@ create schema clean;
 -- These keep the cleaning rules in one place so vendors and manufacturers
 -- get treated exactly the same way.
 
--- Trims, collapses repeated spaces and strips control characters (the
--- export has a few stray \x7F bytes). Returns null for empty strings.
+-- Trims, collapses repeated spaces and strips control characters. Returns
+-- null for empty strings.
 create function clean.squish(raw text) returns text
 language sql immutable as $$
   select nullif(regexp_replace(regexp_replace(trim(raw), '[[:cntrl:]]', '', 'g'), '\s+', ' ', 'g'), '')
 $$;
 
--- Several source fields were capped at 30 characters, which cut off the end
--- of longer emails. When the cut lands in the ending (".co", ".c" or just
--- the dot), it was almost always a ".com", so I put that back. I checked this
--- against the complete emails in the data before deciding on it. Repaired
--- emails get flagged so they can be told apart from the originals. If the
--- cut is inside the domain name itself there's no way to know the rest, so
--- those are left for review instead.
+-- Some source fields were capped at 30 characters, cutting off the end of
+-- longer emails. When the cut lands in the domain ending it was almost always
+-- .com, which I confirmed against the complete emails, so that gets put back
+-- and the email is flagged as repaired. A cut inside the domain name can't be
+-- recovered, so those go to review.
 create function clean.repair_truncated_email(raw text) returns text
 language sql immutable as $$
   select case
@@ -40,10 +38,9 @@ language sql immutable as $$
   select clean.repair_truncated_email(raw) is not null
 $$;
 
--- Pulls the first email address out of a messy field, since many hold two
--- addresses or extra text around them. Truncated endings are repaired first.
--- Any other value that is exactly 30 long and doesn't end in a common full
--- domain is dropped, since fixing it would be a guess.
+-- Pulls the first email out of a messy field, since many hold two addresses
+-- or extra text. Truncated endings are repaired first, and any other value
+-- that fills all 30 characters without a full domain ending is dropped.
 create function clean.extract_email(raw text) returns text
 language sql immutable as $$
   select case
@@ -58,11 +55,9 @@ language sql immutable as $$
   ) found
 $$;
 
--- Normalizes a phone number to E.164 (+15551234567) so every phone has one
--- format. US numbers need a full 10 digits with a valid area code, and
--- international numbers are recognized by the 011 dialing prefix. Anything
--- else, like 7 digit numbers with no area code, is dropped since it can't
--- be dialed reliably. An extension is kept on the end when there is one.
+-- Normalizes phones to E.164 so they all share one format. US numbers need
+-- all 10 digits and international ones the 011 prefix. Anything else can't be
+-- dialed reliably, so it's dropped. Extensions are kept on the end.
 create function clean.normalize_phone(raw text, ext text default null) returns text
 language sql immutable as $$
   select case
@@ -80,10 +75,8 @@ language sql immutable as $$
   ) n
 $$;
 
--- Returns the contact only if it looks like a person. A lot of contacts are
--- departments like SALES or CUSTOMER SERVICE, which aren't useful as a
--- contact name. Some also have a phone extension typed on the end, like
--- "Todd Reschke X 6565", so that gets trimmed off.
+-- Returns the contact only if it looks like a person rather than a
+-- department, and trims off any phone extension typed after the name.
 create function clean.person_name(raw text) returns text
 language sql immutable as $$
   select case
@@ -96,17 +89,16 @@ language sql immutable as $$
   ) n
 $$;
 
--- Vendor and CAGE codes show up as '008224', '8224' and '8224.0' depending
--- on the file, so every key is reduced to the bare number before joining.
+-- Vendor IDs are zero padded in one file and exported as floats in the
+-- other, so keys are reduced to the bare number before joining.
 create function clean.vendor_key(raw text) returns text
 language sql immutable as $$
   select nullif(ltrim(regexp_replace(trim(raw), '\.0+$', ''), '0'), '')
 $$;
 
--- Builds a key for comparing company names. The same company shows up as
--- PARKER HANNIFIN CORP and PARKER HANNIFIN CORPORATION, or A T & T and AT&T,
--- so punctuation, spaces and legal endings like INC or LLC are stripped out
--- before comparing. This is only used for matching, never shown in output.
+-- Key for comparing company names. Punctuation, spaces and legal endings are
+-- stripped so spelling variants of the same company match. Only used for
+-- matching, never shown in output.
 create function clean.name_key(name text) returns text
 language sql immutable as $$
   select nullif(regexp_replace(regexp_replace(
@@ -143,8 +135,7 @@ with base as (
     coalesce(clean.squish(vendor_name), clean.squish(sort_name)) as company_name,
     upper(trim(status)) as status,
     clean.vendor_key(pay_to_vendor_id) as pay_to_vendor_key,
-    -- Old vendor records sometimes say which ID replaced them right in the
-    -- name, like "PALL AEROPOWER (USE 104806)".
+    -- Some old vendor records name the ID that replaced them.
     clean.vendor_key((regexp_match(vendor_name, '\m(?:USE|SEE)\M\D{0,12}(\d{3,})', 'i'))[1]) as replaced_by_vendor_key,
     clean.extract_email(best_email.raw) as email,
     coalesce(clean.email_was_repaired(best_email.raw), false) as email_repaired,
@@ -157,9 +148,9 @@ with base as (
     -- purch_name is skipped here because it is sometimes a company name, not a person.
     coalesce(clean.person_name(contact), clean.person_name(srep_name)) as contact_name
   from staging.vendors v
-  -- Main email field first, then the purchasing and sales rep fields as
-  -- fallbacks. Picking the raw value here (instead of a coalesce) keeps track
-  -- of which field the email came from, so the repaired flag matches it.
+  -- Main email field first, then the purchasing and sales rep fields. Picking
+  -- the raw value here instead of using coalesce keeps track of which field
+  -- the email came from, so the repaired flag matches it.
   left join lateral (
     select f.raw
     from unnest(array[v.email_address, v.purch_contact_email, v.purch_email, v.srep_email])
@@ -189,15 +180,14 @@ with base as (
   select
     m.source_row,
     upper(trim(m.cage_code)) as cage_code,
-    -- If the vendor record says it was replaced by another ID, the
-    -- manufacturer follows it to the replacement so the link isn't lost.
+    -- Manufacturers linked to a replaced vendor record follow it to the new one.
     coalesce(v.replaced_by_vendor_key, clean.vendor_key(m.vendor_code)) as vendor_key,
     clean.squish(m.description) as description
   from staging.cage_maintenance m
   left join clean.vendors v on v.vendor_key = clean.vendor_key(m.vendor_code)
 ),
--- Grab the first phone shaped number in the description and the text on
--- either side of it. That text is what tells us whether the number is a fax.
+-- The first phone shaped number in the description and the text on either
+-- side of it, which is what tells us whether the number is a fax.
 numbers as (
   select
     *,
@@ -215,9 +205,9 @@ classified as (
       when description is null then null
       when clean.extract_email(description) is not null then 'email'
       when description like '%@%' then 'truncated_email'
-      -- A number is a fax when a marker like (F), F), F#, FAX or FX sits right
-      -- before it, or the word FAX right after it. Something like F7740 after
-      -- the number is a fax extension, so the main number is still a phone.
+      -- A number is a fax when a fax marker sits right before it or FAX right
+      -- after it. An F after the number is a fax extension, so the main
+      -- number is still a phone.
       when text_before_number ~* '(\(F\)|\mFA?X\d?|\mF#''?S?|\mF\)?)[\s.:#*-]*\(?$' then 'fax'
       when text_after_number ~* '^\s*(FAX|FX)\M' then 'fax'
       when clean.normalize_phone(first_number) is not null then 'phone'
