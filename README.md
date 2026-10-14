@@ -6,7 +6,7 @@ Everything after the CSV load is plain SQL in Postgres, run in order by a small 
 
 ## Running it
 
-You need Node 20+ and any Postgres 14+ database.
+You need Node 20+ and any Postgres 14+ database with the `pg_trgm` extension available, which ships with Postgres.
 
 ```bash
 npm install
@@ -19,7 +19,7 @@ Set `DATABASE_URL` in `.env`, and point `RAW_DATA_DIR` at the folder with the th
 npm run pipeline
 ```
 
-That loads the raw files, runs every SQL step, checks the result and writes the CSVs to `output/`. The load takes a few minutes because of the registry. After that, `npm run transform` and `npm run export` can be rerun on their own without reloading anything.
+That loads the raw files, runs every SQL step, checks the result and writes the CSVs to `output/`. The load and the fuzzy matching step each take a few minutes because of the size of the registry. After that, `npm run transform` and `npm run export` can be rerun on their own without reloading anything.
 
 ## Output
 
@@ -28,7 +28,7 @@ That loads the raw files, runs every SQL step, checks the result and writes the 
 | `linked_vendor_manufacturers.csv` | Each vendor followed by the manufacturers it represents, grouped by `link_id` |
 | `orphan_vendors.csv` | Vendors with no manufacturers, representing themselves |
 | `orphan_manufacturers.csv` | Manufacturers with no vendor |
-| `needs_review.csv` | Everything left out of the lists, with the reason |
+| `needs_review.csv` | Everything left out of the lists with the reason, plus suggested CAGE codes to confirm |
 
 All three lists have the columns from the brief: `company_name, cage, email, phone, contact_name`. The linked list adds `link_id` and `firm_role`.
 
@@ -42,8 +42,9 @@ The same data lives in the `firms` table, which also has `email_repaired`, `cage
 | Clean | `sql/002_clean.sql` | Normalizes keys, emails, phones and contacts, and labels bad rows with an issue instead of deleting them |
 | Link | `sql/003_relationships.sql` | Merges duplicate vendors by name and decides which manufacturers are linked or orphaned |
 | Match | `sql/004_vendor_cages.sql` | Finds each vendor's own CAGE code by name |
-| Build | `sql/005_firms.sql` | Removes duplicates by CAGE across the lists and builds `firms` and `firms_review` |
-| Check | `sql/006_checks.sql` | Fails the run if the output breaks any of the rules below |
+| Suggest | `sql/005_cage_suggestions.sql` | Fuzzy matches the vendors that are still missing a CAGE, for review only |
+| Build | `sql/006_firms.sql` | Removes duplicates by CAGE across the lists and builds `firms` and `firms_review` |
+| Check | `sql/007_checks.sql` | Fails the run if the output breaks any of the rules below |
 
 ## Decisions
 
@@ -71,11 +72,13 @@ The same data lives in the `firms` table, which also has `email_repaired`, `cage
 
 If the name hits several codes and nothing breaks the tie, the vendor gets no CAGE and goes to review. I didn't use the registry's city and state as a tie breaker because in this copy of the data they don't line up with the vendor addresses.
 
+Vendors that still have no match get a fuzzy pass using trigram similarity, which catches typos and abbreviations. A suggestion only counts if the score is high and clearly ahead of the next closest name. These go to `needs_review.csv` for someone to confirm and never fill in a CAGE on their own, since a close name isn't proof it's the same company.
+
 **Duplicates.** Within the vendor file, duplicates are merged by a normalized company name. Across the lists they're found by CAGE, since that's the real identity of a firm. Linked firms always win over orphans, as the brief asks. When a duplicate is dropped, its contact info fills any gaps on the record that's kept.
 
 A vendor whose only manufacturer is itself ends up as an orphan vendor. A firm can still show up as a vendor in its own group and as a manufacturer under another vendor, since that's a real relationship and not a duplicate.
 
-**Checks.** `006_checks.sql` makes sure no CAGE appears twice across the orphan lists, no orphan shares a CAGE with a linked firm, every linked group has one vendor and at least one manufacturer, nobody is listed under themselves, and every CAGE, email and phone is well formed.
+**Checks.** `007_checks.sql` makes sure no CAGE appears twice across the orphan lists, no orphan shares a CAGE with a linked firm, every linked group has one vendor and at least one manufacturer, nobody is listed under themselves, and every CAGE, email and phone is well formed.
 
 `pay_to_vendor_id` looked like a parent relationship at first, but it points at who gets paid, not who represents whom, so it isn't used for linking.
 
@@ -90,11 +93,11 @@ A vendor whose only manufacturer is itself ends up as an orphan vendor. A firm c
 
 33,654 firms in total, and 462 have a repaired email.
 
-About 48% of vendors got a CAGE. A lot of the rest were never going to have one, since the vendor file includes utilities, shipping companies, software vendors and individual people, none of whom would be registered as contractors.
+About 48% of vendors got a CAGE, and another 613 have a suggested one waiting for review. A lot of the rest were never going to have one, since the vendor file includes utilities, shipping companies, software vendors and individual people, none of whom would be registered as contractors.
 
 ## What I'd do next
 
-- Fuzzy name matching for the vendors that didn't match, as suggestions for someone to confirm rather than automatic matches.
 - Use location as a tie breaker on real data, which should clear up a lot of the ambiguous matches.
 - Use the pay to relationships to group vendors that belong to the same parent company.
-- Turn the review file into a small screen where someone can confirm or reject each item.
+- Turn the review file into a small screen where someone can confirm or reject each item, starting with the CAGE suggestions.
+- Speed up the fuzzy step by matching against distinct registry names instead of every row.

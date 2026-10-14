@@ -203,6 +203,15 @@ select 'vendor_cage_ambiguous' as reason, company_name,
 from final.kept_vendors
 where match_method = 'ambiguous'
 union all
+select 'vendor_cage_suggestion', k.company_name,
+  'Possible match ' || r.company_name || ', CAGE ' || s.cage_code
+    || ', similarity ' || round(s.score::numeric, 2)
+    || case when s.cage_count > 1 then ', ' || s.cage_count || ' codes share this name' else '' end,
+  'vendor file ' || array_to_string(k.merged_vendor_keys, ', ')
+from final.kept_vendors k
+join match.cage_suggestions s using (vendor_key)
+join clean.cage_registry r on r.cage_code = s.cage_code
+union all
 select 'email_truncated', company_name,
   'Email cut off in the source: ' || description,
   'cage maintenance row ' || source_row
