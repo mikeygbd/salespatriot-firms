@@ -18,16 +18,27 @@ language sql immutable as $$
   select nullif(regexp_replace(regexp_replace(trim(raw), '[[:cntrl:]]', '', 'g'), '\s+', ' ', 'g'), '')
 $$;
 
+-- True when an email was cut off at the 30 character limit right after
+-- ".co". A .co ending shows up about 250 times more often at exactly 30
+-- characters than at any other length, so these were almost always ".com".
+-- Real .co addresses of any other length are left alone.
+create function clean.email_was_repaired(raw text) returns boolean
+language sql immutable as $$
+  select length(trim(raw)) = 30 and trim(raw) ~* '@[^@\s]+\.co$'
+$$;
+
 -- Pulls the first email address out of a messy field, since many hold two
 -- addresses or extra text around them. Several source fields were capped at
--- 30 characters, which cut off the end of longer emails (".com" becoming
--- ".co" or "."). If a value is exactly 30 long and doesn't end in a common
--- full domain ending, I treat it as truncated and drop it rather than guess.
+-- 30 characters, which cut off the end of longer emails. A cut right after
+-- ".co" gets repaired to ".com". Any other value that is exactly 30 long and
+-- doesn't end in a common full domain is dropped, since fixing it would be
+-- a guess.
 create function clean.extract_email(raw text) returns text
 language sql immutable as $$
   select case
     when email is null then null
-    when length(raw) = 30 and email !~ '\.(com|net|org|gov|mil|edu|us|biz|info)$' then null
+    when clean.email_was_repaired(raw) then email || 'm'
+    when length(trim(raw)) = 30 and email !~ '\.(com|net|org|gov|mil|edu|us|biz|info)$' then null
     else email
   end
   from (
@@ -105,13 +116,8 @@ with base as (
     coalesce(clean.squish(vendor_name), clean.squish(sort_name)) as company_name,
     upper(trim(status)) as status,
     clean.vendor_key(pay_to_vendor_id) as pay_to_vendor_key,
-    -- Main field first, then the purchasing and sales rep fields as fallbacks.
-    coalesce(
-      clean.extract_email(email_address),
-      clean.extract_email(purch_contact_email),
-      clean.extract_email(purch_email),
-      clean.extract_email(srep_email)
-    ) as email,
+    clean.extract_email(best_email.raw) as email,
+    coalesce(clean.email_was_repaired(best_email.raw), false) as email_repaired,
     coalesce(
       clean.normalize_phone(phone, phone_ext),
       clean.normalize_phone(srep_phone),
@@ -120,7 +126,18 @@ with base as (
     ) as phone,
     -- purch_name is skipped here because it is sometimes a company name, not a person.
     coalesce(clean.person_name(contact), clean.person_name(srep_name)) as contact_name
-  from staging.vendors
+  from staging.vendors v
+  -- Main email field first, then the purchasing and sales rep fields as
+  -- fallbacks. Picking the raw value here (instead of a coalesce) keeps track
+  -- of which field the email came from, so the repaired flag matches it.
+  left join lateral (
+    select f.raw
+    from unnest(array[v.email_address, v.purch_contact_email, v.purch_email, v.srep_email])
+      with ordinality as f(raw, priority)
+    where clean.extract_email(f.raw) is not null
+    order by f.priority
+    limit 1
+  ) best_email on true
 )
 select
   *,
@@ -195,6 +212,7 @@ select
   company_name,
   registry_status,
   case when description_kind = 'email' then clean.extract_email(description) end as email,
+  coalesce(description_kind = 'email' and clean.email_was_repaired(description), false) as email_repaired,
   case when description_kind = 'phone'
     then clean.normalize_phone(first_number)
   end as phone,
