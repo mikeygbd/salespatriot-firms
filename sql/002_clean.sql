@@ -100,6 +100,18 @@ language sql immutable as $$
   select nullif(ltrim(regexp_replace(trim(raw), '\.0+$', ''), '0'), '')
 $$;
 
+-- Builds a key for comparing company names. The same company shows up as
+-- PARKER HANNIFIN CORP and PARKER HANNIFIN CORPORATION, or A T & T and AT&T,
+-- so punctuation, spaces and legal endings like INC or LLC are stripped out
+-- before comparing. This is only used for matching, never shown in output.
+create function clean.name_key(name text) returns text
+language sql immutable as $$
+  select nullif(regexp_replace(regexp_replace(
+    regexp_replace(upper(name), '[^A-Z0-9]+', ' ', 'g'),
+    '\m(THE|AND|INC|INCORPORATED|CORP|CORPORATION|CO|COMPANY|LLC|L L C|LTD|LIMITED|LP|LLP|PLC)\M', ' ', 'g'),
+    '\s+', '', 'g'), '')
+$$;
+
 -- CAGE registry
 -- One row per valid CAGE code. Codes are always 5 letters or digits, so
 -- anything else is a bad record and gets skipped.
