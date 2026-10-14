@@ -6,7 +6,8 @@
   "description": "Cleans and links supplier data (vendors, CAGE maintenance, CAGE registry) into a firms table.",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "load": "tsx src/load.ts"
+    "load": "tsx src/load.ts",
+    "transform": "tsx src/transform.ts"
   },
   "engines": {
     "node": ">=20"
