@@ -19,15 +19,12 @@ language sql immutable as $$
 $$;
 
 -- Several source fields were capped at 30 characters, which cut off the end
--- of longer emails. When the cut lands in the ending, this puts ".com" back:
---   ".co" ending: shows up about 250 times more often at exactly 30
---     characters than at any other length, so these were cut off ".com".
---     Real .co addresses of any other length are left alone.
---   ".c" ending: 99.7% of complete emails with a domain starting in "c"
---     are ".com" (the rest are .ca, .cn, .ch and so on).
---   Ends in a dot: ".com" is 92% of all complete emails, next is .net at 4%.
--- Returns null when no repair applies. A cut inside the domain name itself
--- can't be repaired because there is no way to know the rest of the name.
+-- of longer emails. When the cut lands in the ending (".co", ".c" or just
+-- the dot), it was almost always a ".com", so I put that back. I checked this
+-- against the complete emails in the data before deciding on it. Repaired
+-- emails get flagged so they can be told apart from the originals. If the
+-- cut is inside the domain name itself there's no way to know the rest, so
+-- those are left for review instead.
 create function clean.repair_truncated_email(raw text) returns text
 language sql immutable as $$
   select case
