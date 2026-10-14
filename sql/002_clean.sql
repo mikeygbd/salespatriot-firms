@@ -18,31 +18,46 @@ language sql immutable as $$
   select nullif(regexp_replace(regexp_replace(trim(raw), '[[:cntrl:]]', '', 'g'), '\s+', ' ', 'g'), '')
 $$;
 
--- True when an email was cut off at the 30 character limit right after
--- ".co". A .co ending shows up about 250 times more often at exactly 30
--- characters than at any other length, so these were almost always ".com".
--- Real .co addresses of any other length are left alone.
+-- Several source fields were capped at 30 characters, which cut off the end
+-- of longer emails. When the cut lands in the ending, this puts ".com" back:
+--   ".co" ending: shows up about 250 times more often at exactly 30
+--     characters than at any other length, so these were cut off ".com".
+--     Real .co addresses of any other length are left alone.
+--   ".c" ending: 99.7% of complete emails with a domain starting in "c"
+--     are ".com" (the rest are .ca, .cn, .ch and so on).
+--   Ends in a dot: ".com" is 92% of all complete emails, next is .net at 4%.
+-- Returns null when no repair applies. A cut inside the domain name itself
+-- can't be repaired because there is no way to know the rest of the name.
+create function clean.repair_truncated_email(raw text) returns text
+language sql immutable as $$
+  select case
+    when length(trim(raw)) <> 30 then null
+    when trim(raw) ~* '@[^@\s]+\.co$' then trim(raw) || 'm'
+    when trim(raw) ~* '@[^@\s]+\.c$' then trim(raw) || 'om'
+    when trim(raw) ~* '@[^@\s]+\.$' then trim(raw) || 'com'
+  end
+$$;
+
 create function clean.email_was_repaired(raw text) returns boolean
 language sql immutable as $$
-  select length(trim(raw)) = 30 and trim(raw) ~* '@[^@\s]+\.co$'
+  select clean.repair_truncated_email(raw) is not null
 $$;
 
 -- Pulls the first email address out of a messy field, since many hold two
--- addresses or extra text around them. Several source fields were capped at
--- 30 characters, which cut off the end of longer emails. A cut right after
--- ".co" gets repaired to ".com". Any other value that is exactly 30 long and
--- doesn't end in a common full domain is dropped, since fixing it would be
--- a guess.
+-- addresses or extra text around them. Truncated endings are repaired first.
+-- Any other value that is exactly 30 long and doesn't end in a common full
+-- domain is dropped, since fixing it would be a guess.
 create function clean.extract_email(raw text) returns text
 language sql immutable as $$
   select case
     when email is null then null
-    when clean.email_was_repaired(raw) then email || 'm'
-    when length(trim(raw)) = 30 and email !~ '\.(com|net|org|gov|mil|edu|us|biz|info)$' then null
+    when repaired is null and length(trim(raw)) = 30
+      and email !~ '\.(com|net|org|gov|mil|edu|us|biz|info)$' then null
     else email
   end
-  from (
-    select lower(substring(raw from '[A-Za-z0-9._%+''-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}')) as email
+  from (select clean.repair_truncated_email(raw) as repaired) r,
+  lateral (
+    select lower(substring(coalesce(r.repaired, raw) from '[A-Za-z0-9._%+''-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}')) as email
   ) found
 $$;
 
