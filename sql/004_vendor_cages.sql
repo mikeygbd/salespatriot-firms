@@ -52,7 +52,31 @@ select distinct on (vendor_key)
 from hits
 order by vendor_key, (registry_status = 'A') desc, cage_code;
 
--- Method 2: exact name match against the whole registry
+-- Method 2: a CAGE the client already uses
+-- If a vendor's name matches a manufacturer anywhere in Cage Maintenance, even
+-- one linked to a different vendor or not linked at all, the client's own
+-- file is telling us which CAGE they use for that company. That beats picking
+-- from the full registry, where one name can hit dozens of division codes.
+-- Only used when it points to a single code.
+create table match.client_file as
+with hits as (
+  select distinct p.vendor_key, m.cage_code, m.registry_status
+  from link.parent_vendors p
+  join match.registry_names rn on rn.name_key = p.name_key
+  join link.manufacturers m on m.cage_code = rn.cage_code
+  where not exists (select 1 from match.own_manufacturer o where o.vendor_key = p.vendor_key)
+),
+ranked as (
+  select *, rank() over (partition by vendor_key order by (registry_status = 'A') desc) as candidate_rank
+  from hits
+)
+select vendor_key, min(cage_code) as cage_code
+from ranked
+where candidate_rank = 1
+group by vendor_key
+having count(*) = 1;
+
+-- Method 3: exact name match against the whole registry
 -- Big companies have a CAGE for every division, so one name can hit many
 -- codes. Candidates are narrowed down in order: a match on the full registry
 -- name beats a match on one side of a DBA, and an active CAGE beats an
@@ -68,6 +92,7 @@ with candidates as (
   from link.parent_vendors p
   join match.registry_names rn on rn.name_key = p.name_key
   where not exists (select 1 from match.own_manufacturer o where o.vendor_key = p.vendor_key)
+    and not exists (select 1 from match.client_file c where c.vendor_key = p.vendor_key)
   group by p.vendor_key, rn.cage_code
 ),
 ranked as (
@@ -90,15 +115,17 @@ group by vendor_key;
 create table match.vendor_cages as
 select
   p.vendor_key,
-  coalesce(o.cage_code, e.cage_code) as cage_code,
+  coalesce(o.cage_code, c.cage_code, e.cage_code) as cage_code,
   case
     when o.vendor_key is not null then 'own_manufacturer'
+    when c.vendor_key is not null then 'client_file'
     when e.vendor_key is not null then e.method
     else 'no_match'
   end as match_method,
-  coalesce(o.candidate_count, e.candidate_count, 0) as candidate_count
+  coalesce(o.candidate_count, case when c.vendor_key is not null then 1 end, e.candidate_count, 0) as candidate_count
 from link.parent_vendors p
 left join match.own_manufacturer o on o.vendor_key = p.vendor_key
+left join match.client_file c on c.vendor_key = p.vendor_key
 left join match.exact_name e on e.vendor_key = p.vendor_key;
 
 alter table match.vendor_cages add primary key (vendor_key);

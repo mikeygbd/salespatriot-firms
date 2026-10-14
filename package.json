@@ -7,7 +7,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "load": "tsx src/load.ts",
-    "transform": "tsx src/transform.ts"
+    "transform": "tsx src/transform.ts",
+    "export": "tsx src/export.ts",
+    "pipeline": "npm run load && npm run transform && npm run export"
   },
   "engines": {
     "node": ">=20"

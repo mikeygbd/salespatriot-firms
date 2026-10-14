@@ -82,7 +82,8 @@ $$;
 
 -- Returns the contact only if it looks like a person. A lot of contacts are
 -- departments like SALES or CUSTOMER SERVICE, which aren't useful as a
--- contact name.
+-- contact name. Some also have a phone extension typed on the end, like
+-- "Todd Reschke X 6565", so that gets trimmed off.
 create function clean.person_name(raw text) returns text
 language sql immutable as $$
   select case
@@ -90,7 +91,9 @@ language sql immutable as $$
     when upper(name) ~ '\m(SALES|SERVICES?|DEPT|DEPARTMENT|ORDERS?|ACCOUNTS?|ACCOUNTING|RECEIVABLES?|PAYABLES?|PARTS|QUOTES?|RFQS?|PURCHASING|OFFICE|SUPPORT|INFO|COUNTER|DESK|TEAM|WAREHOUSE|SHIPPING|GOV''?T)\M' then null
     else name
   end
-  from (select clean.squish(raw) as name) n
+  from (
+    select clean.squish(regexp_replace(raw, '[\s,]*\(?\m(X|EXT)\.?\s*\d+\)?\s*$', '', 'i')) as name
+  ) n
 $$;
 
 -- Vendor and CAGE codes show up as '008224', '8224' and '8224.0' depending
@@ -140,6 +143,9 @@ with base as (
     coalesce(clean.squish(vendor_name), clean.squish(sort_name)) as company_name,
     upper(trim(status)) as status,
     clean.vendor_key(pay_to_vendor_id) as pay_to_vendor_key,
+    -- Old vendor records sometimes say which ID replaced them right in the
+    -- name, like "PALL AEROPOWER (USE 104806)".
+    clean.vendor_key((regexp_match(vendor_name, '\m(?:USE|SEE)\M\D{0,12}(\d{3,})', 'i'))[1]) as replaced_by_vendor_key,
     clean.extract_email(best_email.raw) as email,
     coalesce(clean.email_was_repaired(best_email.raw), false) as email_repaired,
     coalesce(
@@ -168,6 +174,7 @@ select
   case
     when vendor_id !~ '^\d+$' then 'test_record'
     when company_name is null then 'missing_name'
+    when replaced_by_vendor_key is not null then 'replaced_by_other_vendor'
     when company_name ~* '(DO NOT USE|DONT USE|DON''T USE)' then 'do_not_use'
     when company_name ~* '(^INACTIVE\M|\(INACTIVE\))' or status = 'I' then 'inactive'
   end as issue
@@ -180,11 +187,14 @@ create index on clean.vendors (vendor_key);
 create table clean.manufacturers as
 with base as (
   select
-    source_row,
-    upper(trim(cage_code)) as cage_code,
-    clean.vendor_key(vendor_code) as vendor_key,
-    clean.squish(description) as description
-  from staging.cage_maintenance
+    m.source_row,
+    upper(trim(m.cage_code)) as cage_code,
+    -- If the vendor record says it was replaced by another ID, the
+    -- manufacturer follows it to the replacement so the link isn't lost.
+    coalesce(v.replaced_by_vendor_key, clean.vendor_key(m.vendor_code)) as vendor_key,
+    clean.squish(m.description) as description
+  from staging.cage_maintenance m
+  left join clean.vendors v on v.vendor_key = clean.vendor_key(m.vendor_code)
 ),
 -- Grab the first phone shaped number in the description and the text on
 -- either side of it. That text is what tells us whether the number is a fax.
