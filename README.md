@@ -100,4 +100,3 @@ About 48% of vendors got a CAGE, and another 613 have a suggested one waiting fo
 - Use location as a tie breaker on real data, which should clear up a lot of the ambiguous matches.
 - Use the pay to relationships to group vendors that belong to the same parent company.
 - Turn the review file into a small screen where someone can confirm or reject each item, starting with the CAGE suggestions.
-- Speed up the fuzzy step by matching against distinct registry names instead of every row.
