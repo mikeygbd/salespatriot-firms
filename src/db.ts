@@ -4,7 +4,7 @@ import path from "node:path";
 import pg from "pg";
 
 // Every script reads the connection string from .env, so the same code runs
-// against Railway, a local Postgres, or whatever database a reviewer points it at.
+// against Railway, a local Postgres, or any other database.
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
   throw new Error("DATABASE_URL is not set. Copy .env.example to .env and fill it in.");
